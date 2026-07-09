@@ -19,7 +19,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   checkOpenCodeAvailable,
@@ -52,23 +52,42 @@ const CWD = process.cwd();
 const C = {
   reset:   '\x1b[0m',  bold: '\x1b[1m',  dim: '\x1b[2m',
   green:   '\x1b[38;5;114m',  red: '\x1b[38;5;203m',
-  cyan:    '\x1b[38;5;87m',   gray: '\x1b[38;5;240m',
+  blue:    '\x1b[38;5;75m',   cyan: '\x1b[38;5;87m',
+  gray:    '\x1b[38;5;240m',
   yellow:  '\x1b[38;5;220m',  magenta: '\x1b[38;5;213m',
+  bgGreen: '\x1b[42m',
 };
 
-// ─── Claude Code context hint ─────────────────────────────────────────
-// Tells OpenCode it's a subagent — keep responses concise for Claude's validation pass
-const CC_HINT = `[CONTEXT: You are a subagent running inside Claude Code. Claude will read and validate your response — be maximally concise. No preamble, no "here is", no filler. Jump straight to findings. Use bullet points and file:line references. 400 words max unless the task genuinely requires more.]\n\n`;
+// ─── Host context hints ───────────────────────────────────────────────
+// Tells OpenCode which host will validate the response.
+const HOST_HINTS = {
+  claude: `[CONTEXT: You are a subagent running inside Claude Code. Claude will read and validate your response — be maximally concise. No preamble, no "here is", no filler. Jump straight to findings. Use bullet points and file:line references. 400 words max unless the task genuinely requires more.]\n\n`,
+  codex: `[CONTEXT: You are a worker running under Codex CLI. Codex will read and validate your response — be maximally concise. No preamble, no "here is", no filler. Jump straight to findings. Use bullet points and file:line references. 400 words max unless the task genuinely requires more.]\n\n`,
+};
 
-function buildPromptPrefix() {
+export function resolveHost(flags = {}, env = process.env) {
+  const requested = String(flags.host ?? env.SWARM_CODE_HOST ?? "auto").toLowerCase();
+  if (requested === "claude" || requested === "codex") return requested;
+  if (requested !== "auto") {
+    throw new Error(`Invalid host "${requested}". Expected claude, codex, or auto.`);
+  }
+
+  if (env.CLAUDE_PLUGIN_ROOT || env.CLAUDE_PLUGIN_DATA || env.CLAUDE_ENV_FILE) return "claude";
+  if (env.CODEX_HOME || env.CODEX_SANDBOX || env.CODEX_ENV_PWD) return "codex";
+  return "claude";
+}
+
+export function buildPromptPrefix(flags = {}) {
+  const host = typeof flags === "string" ? resolveHost({ host: flags }) : resolveHost(flags);
   const config = getConfig(CWD);
   const profile = config.swarmProfile;
-  if (!profile) return CC_HINT;
+  const hostHint = HOST_HINTS[host] ?? HOST_HINTS.claude;
+  if (!profile) return hostHint;
   const parts = [];
   if (profile.goal) parts.push(`Project: ${profile.goal}`);
   if (profile.dirs?.length) parts.push(`Dirs in scope: ${profile.dirs.join(", ")}`);
   const profileCtx = parts.length > 0 ? `[PROJECT CONTEXT: ${parts.join(". ")}]\n` : "";
-  return CC_HINT + profileCtx;
+  return hostHint + profileCtx;
 }
 
 // ─── Spinner helpers ──────────────────────────────────────────────────
@@ -88,7 +107,7 @@ function startSpinner(tag) {
 
 // ─── Argument parsing ────────────────────────────────────────────────
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const args = argv.slice(2);
   const command = args[0] ?? "";
   const flags = {};
@@ -111,6 +130,13 @@ function parseArgs(argv) {
   }
 
   return { command, flags, positional, raw: args.slice(1).join(" ") };
+}
+
+export function readPromptFromFlags(flags, positional = []) {
+  if (flags["prompt-file"]) {
+    return fs.readFileSync(path.resolve(String(flags["prompt-file"])), "utf8");
+  }
+  return positional.join(" ") || flags.prompt || "";
 }
 
 // ─── Model resolution ────────────────────────────────────────────────
@@ -144,6 +170,28 @@ function formatResultHeader(kind, result) {
     `---`,
     "",
   ].join("\n");
+}
+
+export function buildResultPayload(kind, result, extra = {}) {
+  return {
+    kind,
+    status: result.success ? "done" : "failed",
+    success: Boolean(result.success),
+    model: result.model ?? null,
+    attempts: result.attempts ?? null,
+    fallbackUsed: Boolean(result.fallbackUsed),
+    output: result.output ?? "",
+    error: result.error ?? null,
+    ...extra,
+  };
+}
+
+function outputResult(flags, kind, result, text, extra = {}) {
+  if (flags.json) {
+    output(buildResultPayload(kind, result, extra), true);
+  } else {
+    output(text);
+  }
 }
 
 // ─── Prompt templates ────────────────────────────────────────────────
@@ -516,15 +564,16 @@ async function handleTest(config) {
 }
 
 async function handleAsk(flags, positional) {
-  const prompt = positional.join(" ") || flags.prompt;
+  const prompt = readPromptFromFlags(flags, positional);
   if (!prompt) {
     output("Error: No prompt provided. Usage: /opencode:ask <your question>\n");
     process.exit(1);
   }
 
+  const host = resolveHost(flags);
   const { models, source } = await resolveActiveModel(flags);
   const template = loadPrompt("ask");
-  const finalPrompt = buildPromptPrefix() + (template
+  const finalPrompt = buildPromptPrefix(flags) + (template
     ? interpolate(template, { prompt, cwd: CWD })
     : prompt);
 
@@ -561,9 +610,15 @@ async function handleAsk(flags, positional) {
 
   const header = formatResultHeader("ask", result);
   if (result.success) {
-    output(header + result.output);
+    outputResult(flags, "ask", result, header + result.output, { jobId, host, modelSource: source });
   } else {
-    output(header + `**Models tried**: ${models.join(", ")}\n**Error**: ${result.error ?? "timeout"}\n\n${result.output}\n`);
+    outputResult(
+      flags,
+      "ask",
+      result,
+      header + `**Models tried**: ${models.join(", ")}\n**Error**: ${result.error ?? "timeout"}\n\n${result.output}\n`,
+      { jobId, host, modelSource: source, modelsTried: models }
+    );
     process.exit(1);
   }
 }
@@ -571,13 +626,18 @@ async function handleAsk(flags, positional) {
 async function handleReview(flags) {
   const base = flags.base ?? null;
   const scope = flags.scope ?? "auto";
+  const host = resolveHost(flags);
   const { models } = await resolveActiveModel(flags);
 
   const diff = gitDiff(base, scope);
   const status = gitStatus();
 
   if (!diff && !status) {
-    output("Nothing to review — working tree is clean.\n");
+    if (flags.json) {
+      output({ kind: "review", status: "clean", success: true, output: "Nothing to review — working tree is clean.", host }, true);
+    } else {
+      output("Nothing to review — working tree is clean.\n");
+    }
     return;
   }
 
@@ -587,7 +647,7 @@ async function handleReview(flags) {
     diff ? `## Diff\n\`\`\`diff\n${diff.slice(0, 50000)}\n\`\`\`` : "",
   ].filter(Boolean).join("\n\n");
 
-  const finalPrompt = buildPromptPrefix() + (template
+  const finalPrompt = buildPromptPrefix(flags) + (template
     ? interpolate(template, { context, cwd: CWD, base: base ?? "HEAD" })
     : `Review this code change and report issues by severity:\n\n${context}`);
 
@@ -618,19 +678,25 @@ async function handleReview(flags) {
 
   if (result.output) writeJobFile(CWD, jobId, "output.txt", result.output);
   const header = formatResultHeader("review", result);
-  output(header + (result.output || "No output from review.\n"));
+  outputResult(flags, "review", result, header + (result.output || "No output from review.\n"), {
+    jobId,
+    host,
+    base: base ?? "HEAD",
+    scope,
+  });
 }
 
 async function handlePlan(flags, positional) {
-  const prompt = positional.join(" ") || flags.prompt;
+  const prompt = readPromptFromFlags(flags, positional);
   if (!prompt) {
     output("Error: No prompt provided. Usage: /opencode:plan <what to plan>\n");
     process.exit(1);
   }
 
+  const host = resolveHost(flags);
   const { models } = await resolveActiveModel(flags);
   const template = loadPrompt("plan");
-  const finalPrompt = buildPromptPrefix() + (template
+  const finalPrompt = buildPromptPrefix(flags) + (template
     ? interpolate(template, { prompt, cwd: CWD })
     : `Create a detailed implementation plan for:\n\n${prompt}`);
 
@@ -662,7 +728,7 @@ async function handlePlan(flags, positional) {
 
   if (result.output) writeJobFile(CWD, jobId, "output.txt", result.output);
   const header = formatResultHeader("plan", result);
-  output(header + (result.output || "No output from planning.\n"));
+  outputResult(flags, "plan", result, header + (result.output || "No output from planning.\n"), { jobId, host });
 }
 
 function handleStatus(flags, positional) {
@@ -724,12 +790,13 @@ async function handleModels(flags) {
 // ─── Orchestrate (multi-agent) ────────────────────────────────────────
 
 async function handleOrchestrate(flags, positional) {
-  const task = positional.join(" ") || flags.prompt;
+  const task = readPromptFromFlags(flags, positional);
   if (!task) {
     output("Error: No task provided. Usage: /opencode:orchestrate <complex task>\n");
     process.exit(1);
   }
 
+  const host = resolveHost(flags);
   const config = getConfig(CWD);
   const jobId = generateJobId();
 
@@ -744,6 +811,7 @@ async function handleOrchestrate(flags, positional) {
 
   const result = await orchestrate(task, CWD, {
     config,
+    host,
     onProgress: (msg) => process.stderr.write(msg + "\n"),
   });
 
@@ -763,7 +831,30 @@ async function handleOrchestrate(flags, positional) {
   });
 
   if (result.output) writeJobFile(CWD, jobId, "output.txt", result.output);
-  output(result.output);
+  if (flags.json) {
+    output({
+      kind: "orchestrate",
+      status: result.failed === result.agents.length ? "failed" : "done",
+      success: result.failed !== result.agents.length,
+      host,
+      jobId,
+      output: result.output,
+      succeeded: result.succeeded,
+      failed: result.failed,
+      totalTime: result.totalTime,
+      agents: result.agents.map((a) => ({
+        name: a.name,
+        trait: a.trait,
+        focus: a.focus,
+        model: a.model,
+        status: a.status,
+        complexity: a.complexity,
+      })),
+      subtasks: result.subtasks,
+    }, true);
+  } else {
+    output(result.output);
+  }
 }
 
 // ─── Execute (smart auto-router) ──────────────────────────────────────
@@ -836,12 +927,13 @@ function classifyTask(task) {
 }
 
 async function handleExecute(flags, positional) {
-  const task = positional.join(" ") || flags.prompt;
+  const task = readPromptFromFlags(flags, positional);
   if (!task) {
     output("Error: No task provided. Usage: /opencode:execute <what you need>\n");
     process.exit(1);
   }
 
+  const host = resolveHost(flags);
   const config = getConfig(CWD);
   const classification = classifyTask(task);
 
@@ -903,7 +995,7 @@ async function handleExecute(flags, positional) {
   const stopSpinner = startSpinner(tag);
 
   const template = loadPrompt("ask");
-  const finalPrompt = buildPromptPrefix() + (template
+  const finalPrompt = buildPromptPrefix(flags) + (template
     ? interpolate(template, { prompt: task, cwd: CWD })
     : task);
 
@@ -946,7 +1038,16 @@ async function handleExecute(flags, positional) {
   if (result.output) writeJobFile(CWD, jobId, "output.txt", result.output);
 
   const header = formatResultHeader(`execute · ${agent.name} (${agent.trait})`, result);
-  output(header + (result.output || "No output.\n"));
+  outputResult(flags, "execute", result, header + (result.output || "No output.\n"), {
+    jobId,
+    host,
+    classification,
+    agent: {
+      name: agent.name,
+      trait: agent.trait,
+      model: agent.model,
+    },
+  });
 }
 
 // Plain agentTag for stdout (what Claude reads — no ANSI)
@@ -1231,7 +1332,9 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  process.stderr.write(`${err.message ?? err}\n`);
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    process.stderr.write(`${err.message ?? err}\n`);
+    process.exit(1);
+  });
+}

@@ -17,7 +17,8 @@ if [[ -z "$PROMPT" ]]; then
   exit 1
 fi
 
-LOG_DIR="/tmp/swarm-code-logs"
+ROOT_DIR="$(git -C "$WORK_DIR" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$WORK_DIR")"
+LOG_DIR="${SWARM_CODE_LOG_DIR:-/tmp/swarm-code-logs}"
 LOG="$LOG_DIR/oc-team.log"
 mkdir -p "$LOG_DIR"
 
@@ -38,9 +39,10 @@ log() { printf '%s\n' "$1" >> "$LOG"; }
 # Use passed model, or fall back to first model in opencode config
 if [[ -z "$MODEL" ]]; then
   # Try reading from swarm-code state
-  STATE_FILE="/tmp/opencode-companion/$(echo "$WORK_DIR" | md5)/state.json"
+  STATE_DIR="${SWARM_CODE_DATA_DIR:-$ROOT_DIR/.swarm-code}"
+  STATE_FILE="$STATE_DIR/state.json"
   if [[ -f "$STATE_FILE" ]]; then
-    MODEL="$(node -e "try{const s=JSON.parse(require('fs').readFileSync('$STATE_FILE','utf8')); process.stdout.write((s.modelPriority||[])[0]||'')}catch{}" 2>/dev/null)"
+    MODEL="$(node -e "try{const s=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')); const p=s.config?.modelPriority||s.modelPriority||[]; process.stdout.write(p[0]||'')}catch{}" "$STATE_FILE" 2>/dev/null)"
   fi
 fi
 

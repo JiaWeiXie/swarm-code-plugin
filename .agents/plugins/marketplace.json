@@ -1,0 +1,21 @@
+{
+  "name": "swarm-code-local",
+  "plugins": [
+    {
+      "name": "swarm-code",
+      "source": {
+        "source": "local",
+        "path": "./plugins/swarm-code"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity",
+      "interface": {
+        "displayName": "swarm-code",
+        "shortDescription": "Delegate Codex or Claude Code analysis, review, and planning work to OpenCode workers."
+      }
+    }
+  ]
+}

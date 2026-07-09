@@ -9,8 +9,10 @@ import os from "node:os";
 import path from "node:path";
 
 const STATE_VERSION = 1;
-const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
-const FALLBACK_STATE_ROOT = path.join(os.tmpdir(), "opencode-companion");
+const CLAUDE_PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
+const STATE_DATA_ENV = "SWARM_CODE_DATA_DIR";
+const WORKSPACE_STATE_DIR = ".swarm-code";
+const LEGACY_FALLBACK_STATE_ROOT = path.join(os.tmpdir(), "opencode-companion");
 const STATE_FILE = "state.json";
 const JOBS_DIR = "jobs";
 const MAX_JOBS = 50;
@@ -48,7 +50,7 @@ export function resolveWorkspaceRoot(cwd) {
   return cwd || process.cwd();
 }
 
-export function resolveStateDir(cwd) {
+function legacyStateSlug(cwd) {
   const root = resolveWorkspaceRoot(cwd);
   let canonical = root;
   try { canonical = fs.realpathSync.native(root); } catch { /* keep root */ }
@@ -57,9 +59,24 @@ export function resolveStateDir(cwd) {
     .replace(/[^a-zA-Z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "") || "workspace";
   const hash = createHash("sha256").update(canonical).digest("hex").slice(0, 16);
-  const dataDir = process.env[PLUGIN_DATA_ENV];
-  const stateRoot = dataDir ? path.join(dataDir, "state") : FALLBACK_STATE_ROOT;
-  return path.join(stateRoot, `${slug}-${hash}`);
+  return `${slug}-${hash}`;
+}
+
+export function resolveStateDir(cwd) {
+  const override = process.env[STATE_DATA_ENV];
+  if (override) return path.resolve(override);
+  return path.join(resolveWorkspaceRoot(cwd), WORKSPACE_STATE_DIR);
+}
+
+export function resolveLegacyStateDirs(cwd) {
+  const slug = legacyStateSlug(cwd);
+  const dirs = [];
+  const claudeDataDir = process.env[CLAUDE_PLUGIN_DATA_ENV];
+  if (claudeDataDir) {
+    dirs.push(path.join(claudeDataDir, "state", slug));
+  }
+  dirs.push(path.join(LEGACY_FALLBACK_STATE_ROOT, slug));
+  return dirs;
 }
 
 export function resolveStateFile(cwd) {
@@ -74,9 +91,7 @@ export function ensureStateDir(cwd) {
   fs.mkdirSync(resolveJobsDir(cwd), { recursive: true });
 }
 
-export function loadState(cwd) {
-  const file = resolveStateFile(cwd);
-  if (!fs.existsSync(file)) return defaultState();
+function readStateFile(file) {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
     return {
@@ -86,8 +101,22 @@ export function loadState(cwd) {
       jobs: Array.isArray(parsed.jobs) ? parsed.jobs : [],
     };
   } catch {
-    return defaultState();
+    return null;
   }
+}
+
+export function loadState(cwd) {
+  const file = resolveStateFile(cwd);
+  if (fs.existsSync(file)) return readStateFile(file) ?? defaultState();
+
+  for (const dir of resolveLegacyStateDirs(cwd)) {
+    const legacyFile = path.join(dir, STATE_FILE);
+    if (!fs.existsSync(legacyFile)) continue;
+    const state = readStateFile(legacyFile);
+    if (state) return state;
+  }
+
+  return defaultState();
 }
 
 export function saveState(cwd, state) {

@@ -3,7 +3,7 @@
  * assigns named agents, runs in parallel, streams progress.
  *
  * Key design: OpenCode does the orchestration thinking (cheap),
- * Claude Code only validates the final synthesis (saves tokens).
+ * the host agent only validates the final synthesis (saves tokens).
  *
  * Made by Alejandro Apodaca Cordova (apoapps.com)
  */
@@ -20,8 +20,15 @@ const C = {
   yellow: '\x1b[38;5;220m',
 };
 
-// Tells OpenCode it's a subagent inside Claude Code — keep responses concise
-const CC_HINT = `[CONTEXT: You are a subagent running inside Claude Code. Claude will read and validate your response. Be maximally concise — no preamble, no filler. Jump to findings. Bullets + file:line refs. 400 words max.]\n\n`;
+// Tells OpenCode which host will validate the response.
+const HOST_HINTS = {
+  claude: `[CONTEXT: You are a subagent running inside Claude Code. Claude will read and validate your response. Be maximally concise — no preamble, no filler. Jump to findings. Bullets + file:line refs. 400 words max.]\n\n`,
+  codex: `[CONTEXT: You are a worker running under Codex CLI. Codex will read and validate your response. Be maximally concise — no preamble, no filler. Jump to findings. Bullets + file:line refs. 400 words max.]\n\n`,
+};
+
+function hostHint(host) {
+  return HOST_HINTS[host] ?? HOST_HINTS.claude;
+}
 
 // ─── Complexity tiers → model mapping ────────────────────────────────
 
@@ -157,6 +164,8 @@ export async function orchestrate(task, cwd, options = {}) {
   const config = options.config ?? getConfig(cwd);
   const available = config.availableModels ?? [];
   const onProgress = options.onProgress ?? ((msg) => process.stderr.write(msg + "\n"));
+  const host = options.host ?? "claude";
+  const workerHint = hostHint(host);
 
   const startTime = Date.now();
 
@@ -195,7 +204,7 @@ export async function orchestrate(task, cwd, options = {}) {
     agent.startedAt = Date.now();
     onProgress(agentProgress(agent, `working on: ${agent.focus}...`));
 
-    const result = await executeWithRetry(CC_HINT + agent.task, {
+    const result = await executeWithRetry(workerHint + agent.task, {
       fallbackModels: [agent.model],
       timeout: 120_000,
       cwd,
@@ -271,7 +280,7 @@ export async function orchestrate(task, cwd, options = {}) {
     sections.push(``);
   }
 
-  sections.push(`**Claude**: validate these findings, resolve contradictions, and synthesize a final answer.`);
+  sections.push(`**${host === "codex" ? "Codex" : "Claude"}**: validate these findings, resolve contradictions, and synthesize a final answer.`);
 
   return {
     output: sections.join("\n"),

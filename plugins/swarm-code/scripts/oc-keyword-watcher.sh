@@ -46,9 +46,11 @@ open_opencode_in_oc_team() {
 # ── Monitor the Claude Code pane output via pipe-pane ──
 # pipe-pane feeds all terminal output to this script's stdin
 
+PATTERN='_Gi=([^;]+);OK'
+
 while IFS= read -r line; do
   # Detect keyword: _Gi=<anything>;OK
-  if [[ "$line" =~ _Gi=([^;]+);OK ]]; then
+  if [[ "$line" =~ $PATTERN ]]; then
     session_id="${BASH_REMATCH[1]}"
     open_opencode_in_oc_team "$session_id"
   fi

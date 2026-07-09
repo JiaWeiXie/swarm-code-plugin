@@ -8,6 +8,7 @@
  */
 
 import path from 'node:path';
+import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import SessionFormatter from '../lib/ui/session-formatter.mjs';
 
@@ -78,13 +79,9 @@ export function onResponseComplete({
 function logSessionMetadata(meta) {
   // Persist to session history for UI enhancements in Phase 5
   const historyFile = path.join(process.cwd(), '.opencode-history.jsonl');
-  const fs = await import('node:fs/promises');
-  
-  try {
-    await fs.appendFile(historyFile, JSON.stringify(meta) + '\n');
-  } catch (err) {
+  fs.appendFile(historyFile, JSON.stringify(meta) + '\n').catch(() => {
     // Silent fail — don't interrupt session
-  }
+  });
 }
 
 /**

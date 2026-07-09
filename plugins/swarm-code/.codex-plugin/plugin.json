@@ -1,0 +1,10 @@
+{
+  "name": "swarm-code",
+  "version": "2.2.4",
+  "description": "Agent swarm adapter for Codex CLI and Claude Code. Codex or Claude leads while OpenCode executes delegated review, planning, and analysis work.",
+  "author": {
+    "name": "Alejandro Apodaca Cordova (apoapps.com)"
+  },
+  "license": "MIT",
+  "skills": "./codex/skills/"
+}
