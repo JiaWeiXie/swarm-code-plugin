@@ -30,6 +30,7 @@ import {
 } from "./lib/opencode.mjs";
 import { orchestrate } from "./lib/orchestrator.mjs";
 import {
+  clearConfiguration,
   ensureStateDir,
   generateJobId,
   getConfig,
@@ -292,8 +293,8 @@ async function handleSetup(flags) {
     return handleRemoveFallback(flags["remove-fallback"], config);
   }
   if (flags.reset) {
-    setConfig(CWD, { modelPriority: [], availableModels: [], availableModelsCheckedAt: null });
-    output(ok("Configuration reset. Run /opencode:setup to reconfigure.\n"));
+    clearConfiguration(CWD);
+    output(ok("Configuration reset. Run /swarm-code:init --reconfigure to configure again.\n"));
     return;
   }
   if (flags.test) {
@@ -479,6 +480,58 @@ async function handleSetPrimary(model, config) {
     console.log(info(`Fallback order: ${newPriority.slice(1).join(" → ")}`));
   }
   console.log("");
+}
+
+function parseModelPriority(value) {
+  let priority;
+  try {
+    priority = JSON.parse(String(value));
+  } catch {
+    throw new Error("Model priority must be a JSON array of model IDs.");
+  }
+
+  if (!Array.isArray(priority) || priority.some((model) => typeof model !== "string" || !model.trim())) {
+    throw new Error("Model priority must be a JSON array of non-empty model IDs.");
+  }
+
+  const unique = new Set();
+  for (const model of priority) {
+    const key = model.toLowerCase();
+    if (unique.has(key)) throw new Error(`Model priority contains duplicate model "${model}".`);
+    unique.add(key);
+  }
+
+  return priority;
+}
+
+async function handleSetModelPriority(value, flags) {
+  const requested = parseModelPriority(value);
+  const available = await detectAvailableModels();
+  const availableByKey = new Map(available.map((model) => [model.toLowerCase(), model]));
+  const unavailable = requested.filter((model) => !availableByKey.has(model.toLowerCase()));
+
+  if (unavailable.length > 0) {
+    throw new Error(`Model(s) not available from OpenCode: ${unavailable.join(", ")}`);
+  }
+
+  const modelPriority = requested.map((model) => availableByKey.get(model.toLowerCase()));
+  setConfig(CWD, {
+    modelPriority,
+    availableModels: available,
+    availableModelsCheckedAt: new Date().toISOString(),
+  });
+
+  if (flags.json) {
+    output({ status: "configured", modelPriority }, true);
+    return;
+  }
+
+  if (modelPriority.length === 0) {
+    console.log(ok("Model priority cleared. Configure a model when you are ready."));
+    return;
+  }
+
+  console.log(ok(`Model priority set: ${modelPriority.join(" → ")}`));
 }
 
 async function handleAddFallback(model, config) {
@@ -1078,9 +1131,13 @@ async function handleInit(flags) {
 
   // ── Reset mode ──
   if (flags.reset) {
-    setConfig(CWD, { modelPriority: [], availableModels: [], availableModelsCheckedAt: null });
-    console.log(ok("Configuration reset. Run /swarm-code init to reconfigure."));
+    clearConfiguration(CWD);
+    console.log(ok("Configuration reset. Run /swarm-code:init --reconfigure to configure again."));
     return;
+  }
+
+  if (flags["set-model-priority"] !== undefined) {
+    return handleSetModelPriority(flags["set-model-priority"], flags);
   }
 
   // ── Set primary model (delegated from init wizard) ──
@@ -1140,7 +1197,7 @@ async function handleInit(flags) {
   const cacheAge = config.availableModelsCheckedAt
     ? Date.now() - Date.parse(config.availableModelsCheckedAt)
     : Infinity;
-  if (models.length === 0 || cacheAge > 5 * 60 * 1000 || flags.refresh) {
+  if (models.length === 0 || cacheAge > 5 * 60 * 1000 || flags.refresh || flags.reconfigure) {
     process.stderr.write(`${C.dim}Scanning models...${C.reset}\n`);
     models = await detectAvailableModels();
     setConfig(CWD, { availableModels: models, availableModelsCheckedAt: new Date().toISOString() });
@@ -1159,10 +1216,12 @@ async function handleInit(flags) {
       activeModel: resolved.model ?? null,
       fallbackUsed: resolved.fallbackUsed,
       modelPriority: priority,
+      detectedModels: models,
       models: models.length,
       providers: Object.keys(grouped).length,
       tmux: inTmux,
       swarmProfile: config.swarmProfile ?? null,
+      reconfigure: Boolean(flags.reconfigure),
     }, true);
     return;
   }
@@ -1316,7 +1375,7 @@ async function main() {
         "swarm-code — Made by Alejandro Apodaca Cordova (apoapps.com)",
         "",
         "User command (the only one):",
-        "  opencode-runner.mjs init        [--upgrade] [--reset] [--test]",
+        "  opencode-runner.mjs init        [--reconfigure] [--set-model-priority <json>] [--upgrade] [--reset] [--test]",
         "",
         "Internal (Claude uses these — not user-facing):",
         '  opencode-runner.mjs execute     "<task>"             — auto-routes everything',

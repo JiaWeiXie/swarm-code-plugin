@@ -1,6 +1,6 @@
 ---
 description: Initialize swarm-code — interactive setup wizard, model selection, project context, swarm profile
-argument-hint: '[--upgrade] [--reset] [--test] [--json]'
+argument-hint: '[--reconfigure] [--upgrade] [--reset] [--test] [--json]'
 allowed-tools: Bash(node:*), Bash(git:*), Bash(tmux:*), AskUserQuestion
 ---
 
@@ -20,31 +20,43 @@ Raw arguments: `$ARGUMENTS`
 node "${CLAUDE_PLUGIN_ROOT}/scripts/opencode-runner.mjs" init --json $ARGUMENTS
 ```
 
-Parse the JSON. If `$ARGUMENTS` contains `--upgrade`, `--reset`, `--test`, or `--json`, run the command and return verbatim output — skip all wizard steps.
+Parse the JSON and set `reconfigure` when `$ARGUMENTS` contains `--reconfigure`.
+
+If `$ARGUMENTS` contains `--upgrade`, `--reset`, `--test`, or a user-supplied `--json`, run the command and return verbatim output — skip all wizard steps. `--reconfigure` must continue into the wizard.
+
+Before asking questions, show the current primary model, fallback priority, project goal, directories, and delegated task types from the JSON status. Say that reconfiguration replaces all of these settings but preserves job history.
 
 ---
 
-## Step 2 — Model setup (if needed)
+## Step 2 — Model setup
 
-If `activeModel` is null in the JSON output:
+Run this step when `reconfigure` is true or `activeModel` is null. Otherwise retain the existing model priority and continue to Step 3.
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/opencode-runner.mjs" models
 ```
 
-Use AskUserQuestion to ask:
+Parse the model inventory JSON. Use AskUserQuestion to ask:
 - Question: "Which OpenCode model should be the primary worker?"
 - Build options from the detected model list (max 4 options, prefer free/fast ones first)
 - Include "I'll configure it later" as an option
 
-Then set the chosen model:
+If a primary model was selected, use AskUserQuestion with multiSelect enabled to ask:
+- Question: "Which fallback models should OpenCode try if the primary fails?"
+- Options: detected models excluding the primary (max 4 options), plus "No fallbacks"
+- Preserve the selection order as the fallback priority order
+
+Replace the complete model priority list in one call. If the user chose to configure later, pass an empty array:
+
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/opencode-runner.mjs" init --set-primary "<chosen-model>"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/opencode-runner.mjs" init --set-model-priority '<JSON array of primary followed by fallbacks>'
 ```
 
 ---
 
 ## Step 3 — Project context interview
+
+Run this step when `reconfigure` is true or `swarmProfile` is null. Otherwise retain the existing profile and skip to Step 5.
 
 Ask these 3 questions using AskUserQuestion. Do all 3 in one message (you can call AskUserQuestion once with multiple questions if supported, or sequentially).
 
@@ -129,6 +141,7 @@ Claude picks the right approach — the user never needs to type these.
 | Flag | Action |
 |------|--------|
 | `--upgrade` | Pull latest from git, sync installed plugin |
-| `--reset` | Clear model and profile configuration |
+| `--reconfigure` | Replace model priority and project/task profile |
+| `--reset` | Clear model and profile configuration; retain job history |
 | `--test` | Test the active model with a probe |
 | `--json` | Machine-readable output (skip wizard) |

@@ -42,6 +42,22 @@ plugins/swarm-code/
   skills/
 ```
 
+Install from GitHub by first adding this repository as a marketplace, then
+installing the named plugin:
+
+```bash
+claude plugin marketplace add https://github.com/JiaWeiXie/swarm-code-plugin
+claude plugin install swarm-code@swarm-code
+```
+
+`claude plugin install` accepts a plugin name, not a GitHub URL. Restart Claude
+Code or run `/reload` after installation. For local development without
+installing from a marketplace, launch Claude Code with:
+
+```bash
+claude --plugin-dir /path/to/swarm-code-plugin/plugins/swarm-code
+```
+
 Initialize from Claude Code:
 
 ```text
@@ -49,6 +65,14 @@ Initialize from Claude Code:
 ```
 
 Claude can then spawn `swarm-code:opencode-worker`, which relays work through `scripts/oc-run.sh`.
+
+To replace the model priority, project context, and delegated task types for the current workspace, run:
+
+```text
+/swarm-code:init --reconfigure
+```
+
+The wizard refreshes OpenCode models, asks for a primary model and optional ordered fallbacks, then replaces the previous configuration. Use `/swarm-code:init --reset` to clear model/profile settings while retaining job history.
 
 ### Codex CLI
 
@@ -74,6 +98,7 @@ After restarting Codex, open `/plugins`, install `swarm-code` from the repo mark
 
 ```text
 $swarm-code-ask
+$swarm-code-configure
 $swarm-code-review
 $swarm-code-plan
 $swarm-code-orchestrate
@@ -81,12 +106,16 @@ $swarm-code-orchestrate
 
 Codex custom prompts are intentionally not used because Codex now recommends skills for reusable workflows.
 
+Use `$swarm-code-configure` to reconfigure the shared workspace model priority, project context, and delegated task types. Its changes are immediately visible to Claude Code because both hosts use the same `.swarm-code/state.json`.
+
 ## Shared Runner
 
 Both hosts use the same Node runner:
 
 ```bash
 node plugins/swarm-code/scripts/opencode-runner.mjs init --json
+node plugins/swarm-code/scripts/opencode-runner.mjs init --reconfigure --json
+node plugins/swarm-code/scripts/opencode-runner.mjs init --set-model-priority '["openai/gpt-5-codex", "minimax/MiniMax-M2.7"]'
 node plugins/swarm-code/scripts/opencode-runner.mjs models
 node plugins/swarm-code/scripts/opencode-runner.mjs ask --host codex --prompt-file /tmp/task.txt --json
 node plugins/swarm-code/scripts/opencode-runner.mjs plan --host codex --prompt-file /tmp/task.txt --json

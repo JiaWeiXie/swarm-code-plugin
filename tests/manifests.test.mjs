@@ -30,12 +30,13 @@ test("marketplaces point at the swarm-code plugin", () => {
   assert.equal(codexMarketplace.plugins[0].source.path, "./plugins/swarm-code");
 });
 
-test("Codex skills expose the expected four skill names", () => {
+test("Codex skills expose the expected skill names", () => {
   const skillRoot = path.join(repoRoot, "plugins/swarm-code/codex/skills");
   const skillNames = fs.readdirSync(skillRoot).sort();
 
   assert.deepEqual(skillNames, [
     "swarm-code-ask",
+    "swarm-code-configure",
     "swarm-code-orchestrate",
     "swarm-code-plan",
     "swarm-code-review",
@@ -46,4 +47,8 @@ test("Codex skills expose the expected four skill names", () => {
     assert.match(body, new RegExp(`name: ${name}`));
     assert.match(body, /--host codex/);
   }
+
+  const configure = fs.readFileSync(path.join(skillRoot, "swarm-code-configure", "SKILL.md"), "utf8");
+  assert.match(configure, /--set-model-priority/);
+  assert.match(configure, /--save-profile/);
 });

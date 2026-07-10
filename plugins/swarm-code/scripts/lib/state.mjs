@@ -158,6 +158,18 @@ export function setConfig(cwd, patch) {
   saveState(cwd, state);
 }
 
+export function clearConfiguration(cwd) {
+  const state = loadState(cwd);
+  state.config = {
+    ...state.config,
+    modelPriority: [],
+    availableModels: [],
+    availableModelsCheckedAt: null,
+  };
+  delete state.config.swarmProfile;
+  saveState(cwd, state);
+}
+
 export function generateJobId() {
   return crypto.randomUUID();
 }
